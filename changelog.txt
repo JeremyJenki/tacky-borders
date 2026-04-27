@@ -1,0 +1,28 @@
+Changes from tacky-borders v1.5.0
+==================================
+
+1. Tray icon tooltip
+   - Changed from "tacky-borders <version>" to "Tacky Borders"
+
+2. Tray menu
+   - Minor changes to the layout of the tray menu
+
+3. Single instance enforcement
+   - Launching a second instance now silently exits"
+ 
+4. Portable config directory
+   - Config folder is now created next to the exe by default
+ 
+5. Auto Start fix
+   - Disabling Auto Start now works correctly even if the exe was moved
+ 
+6. Accent color auto-reload
+   - Borders now automatically reload when the Windows accent color is changed
+ 
+7. Accent color modifiers
+   - New syntax for lightening or darkening the accent color in gradients
+ 
+8. Inactive border disable
+   - inactive_color now supports "none" to hide the border entirely when a window is inactive
+
+9. Updated tacky-borders icon
