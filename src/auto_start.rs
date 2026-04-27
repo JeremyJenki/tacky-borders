@@ -17,7 +17,6 @@ static EXE_PATH: LazyLock<String> = LazyLock::new(|| {
 });
 
 pub fn is_autostart_enabled() -> Result<bool> {
-    let exe_path = EXE_PATH.as_str();
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let run_key = hkcu
@@ -25,7 +24,7 @@ pub fn is_autostart_enabled() -> Result<bool> {
         .map_err(|e| anyhow!("failed to open HKEY_CURRENT_USER\\...\\Run - {e}"))?;
 
     match run_key.get_value::<String, _>(APP_NAME) {
-        Ok(value) => Ok(value == exe_path),
+        Ok(_) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(anyhow!("failed to get the autostart registry key - {e}")),
     }

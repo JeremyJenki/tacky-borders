@@ -1,6 +1,7 @@
 use anyhow::{Context, anyhow};
 use core::f32;
 use serde::{Deserialize, Serialize};
+use serde_yaml_ng;
 use std::f32::consts::PI;
 use windows::Win32::Foundation::{FALSE, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D1_GRADIENT_STOP};
@@ -17,12 +18,42 @@ use crate::LogIfErr;
 use crate::theme::is_light_theme;
 use crate::utils::WindowsCompatibleResult;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum ColorBrushConfig {
+    None,
     Solid(String),
     Gradient(GradientBrushConfig),
     ThemeAware(ThemeAwareColor),
+}
+
+impl<'de> serde::Deserialize<'de> for ColorBrushConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_yaml_ng::Value::deserialize(deserializer)
+            .map_err(serde::de::Error::custom)?;
+
+        if let serde_yaml_ng::Value::String(ref s) = value {
+            if s.eq_ignore_ascii_case("none") {
+                return Ok(ColorBrushConfig::None);
+            }
+        }
+
+        // Try Solid (string)
+        if let serde_yaml_ng::Value::String(s) = value.clone() {
+            return Ok(ColorBrushConfig::Solid(s));
+        }
+
+        // Try ThemeAware
+        if let Ok(theme) = serde_yaml_ng::from_value::<ThemeAwareColor>(value.clone()) {
+            return Ok(ColorBrushConfig::ThemeAware(theme));
+        }
+
+        // Try Gradient
+        if let Ok(gradient) = serde_yaml_ng::from_value::<GradientBrushConfig>(value.clone()) {
+            return Ok(ColorBrushConfig::Gradient(gradient));
+        }
+
+        Err(serde::de::Error::custom("invalid color config"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -90,6 +121,7 @@ pub struct GradientBrush {
 impl ColorBrushConfig {
     pub fn to_color_brush(&self, is_active_color: bool) -> ColorBrush {
         match self {
+            ColorBrushConfig::None => ColorBrush::default(),
             ColorBrushConfig::ThemeAware(theme) => {
                 let resolved = if is_light_theme() {
                     &theme.light
@@ -99,9 +131,9 @@ impl ColorBrushConfig {
                 resolved.to_color_brush(is_active_color)
             }
             ColorBrushConfig::Solid(solid_config) => {
-                if solid_config == "accent" {
+                if let Some(color) = resolve_accent_color(solid_config, is_active_color) {
                     ColorBrush::Solid(SolidBrush {
-                        color: get_accent_color(is_active_color),
+                        color,
                         brush: None,
                     })
                 } else {
@@ -122,8 +154,8 @@ impl ColorBrushConfig {
                     .enumerate()
                     .map(|(i, color)| D2D1_GRADIENT_STOP {
                         position: i as f32 * step,
-                        color: if color == "accent" {
-                            get_accent_color(is_active_color)
+                        color: if let Some(c) = resolve_accent_color(&color, is_active_color) {
+                            c
                         } else {
                             get_color_from_hex(color.as_str())
                         },
@@ -405,6 +437,89 @@ impl GradientBrush {
             };
         }
     }
+}
+
+fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+
+    let l = (max + min) / 2.0;
+
+    let s = if delta == 0.0 {
+        0.0
+    } else {
+        delta / (1.0 - (2.0 * l - 1.0).abs())
+    };
+
+    let h = if delta == 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * (((g - b) / delta) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+
+    let h = if h < 0.0 { h + 360.0 } else { h };
+
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+
+    let (r, g, b) = match h as u32 {
+        0..60   => (c, x, 0.0),
+        60..120  => (x, c, 0.0),
+        120..180 => (0.0, c, x),
+        180..240 => (0.0, x, c),
+        240..300 => (x, 0.0, c),
+        _        => (c, 0.0, x),
+    };
+
+    (r + m, g + m, b + m)
+}
+
+fn apply_accent_modifier(color: D2D1_COLOR_F, modifier: &str) -> D2D1_COLOR_F {
+    // Parse "light:N" or "dark:N" where N is 0-100
+    let parts: Vec<&str> = modifier.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return color;
+    }
+    let Ok(amount) = parts[1].parse::<f32>() else {
+        error!("invalid accent modifier amount: {}", parts[1]);
+        return color;
+    };
+    let amount = (amount / 100.0).clamp(0.0, 1.0);
+
+    let (h, s, l) = rgb_to_hsl(color.r, color.g, color.b);
+
+    let new_l = match parts[0] {
+        "light" => l + (1.0 - l) * amount,
+        "dark"  => l - l * amount,
+        _ => {
+            error!("invalid accent modifier: {}", parts[0]);
+            return color;
+        }
+    };
+
+    let (r, g, b) = hsl_to_rgb(h, s, new_l);
+    D2D1_COLOR_F { r, g, b, a: color.a }
+}
+
+fn resolve_accent_color(color_str: &str, is_active_color: bool) -> Option<D2D1_COLOR_F> {
+    if color_str == "accent" {
+        return Some(get_accent_color(is_active_color));
+    }
+    if let Some(modifier) = color_str.strip_prefix("accent:") {
+        let base = get_accent_color(is_active_color);
+        return Some(apply_accent_modifier(base, modifier));
+    }
+    None
 }
 
 fn get_accent_color(is_active_color: bool) -> D2D1_COLOR_F {

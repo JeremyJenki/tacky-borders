@@ -10,7 +10,6 @@ use crate::{
     reload_borders,
 };
 use anyhow::{Context, anyhow};
-use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, DirBuilder};
 use std::os::windows::ffi::OsStrExt;
@@ -243,10 +242,9 @@ impl Config {
     pub fn get_dir() -> anyhow::Result<PathBuf> {
         let config_dir = env::var("TACKY_BORDERS_CONFIG_HOME")
             .map(PathBuf::from)
-            .or_else(|env_err| {
-                home_dir()
-                    .map(|dir| dir.join(".config").join("tacky-borders"))
-                    .ok_or(anyhow!("could not find home dir, and could not access TACKY_BORDERS_CONFIG_HOME env var: {env_err}"))
+            .or_else(|_| {
+                std::env::current_exe()
+                    .map(|exe| exe.parent().unwrap_or(std::path::Path::new(".")).join("config"))
             })?;
 
         if !config_dir.exists() {

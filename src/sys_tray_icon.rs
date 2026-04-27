@@ -26,13 +26,13 @@ pub fn create_tray_icon(hwineventhook: HWINEVENTHOOK) -> anyhow::Result<TrayIcon
 
     let tray_menu = Menu::new();
     tray_menu.append_items(&[
-        &MenuItem::with_id("0", "Show Config", true, None),
-        &CheckMenuItem::with_id("1", "Auto Start", true, auto_enabled, None),
+        &CheckMenuItem::with_id("1", "Auto-start", true, auto_enabled, None),
+        &MenuItem::with_id("0", "Config", true, None),
         &MenuItem::with_id("2", "Reload", true, None),
         &MenuItem::with_id("3", "Close", true, None),
     ])?;
 
-    let tooltip = format!("{}{}", "tacky-borders v", env!("CARGO_PKG_VERSION"));
+    let tooltip = "Tacky Borders".to_string();
 
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))

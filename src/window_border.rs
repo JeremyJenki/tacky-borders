@@ -24,9 +24,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PBT_APMSUSPEND, PM_REMOVE, PeekMessageW, PostQuitMessage, SET_WINDOW_POS_FLAGS,
     SM_CXVIRTUALSCREEN, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOREDRAW, SWP_NOSENDCHANGING,
     SWP_NOZORDER, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW,
-    SetWindowPos, WM_CREATE, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY,
-    WM_PAINT, WM_POWERBROADCAST, WM_TIMER, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WS_DISABLED,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    SetWindowPos, WM_CREATE, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_NCDESTROY, WM_PAINT, WM_POWERBROADCAST, WM_TIMER,
+    WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WS_DISABLED, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -84,6 +85,7 @@ pub struct WindowBorder {
     follow_native_border: bool,
     initialize_delay: u64,
     unminimize_delay: u64,
+    hide_when_inactive: bool,
     // ------------------------------
     is_paused: bool,
     last_reorder_time: Option<time::Instant>,
@@ -110,6 +112,7 @@ impl WindowBorder {
             follow_native_border: Default::default(),
             initialize_delay: Default::default(),
             unminimize_delay: Default::default(),
+            hide_when_inactive: false,
             is_paused: Default::default(),
             last_reorder_time: None,
             is_debouncing_reorder: false,
@@ -284,6 +287,8 @@ impl WindowBorder {
         let border_radius = radius_config.to_radius(border_width, dpi, self.tracking_window);
         let active_color = active_color_config.to_color_brush(true);
         let inactive_color = inactive_color_config.to_color_brush(false);
+
+        self.hide_when_inactive = *inactive_color_config == crate::colors::ColorBrushConfig::None;
 
         let animations = animations_config.to_animations();
         let effects = effects_config.to_effects();
@@ -564,6 +569,15 @@ impl WindowBorder {
     }
 
     fn update_brush_opacities(&mut self) {
+        if self.hide_when_inactive && self.window_state == WindowState::Inactive {
+            self.update_position(Some(SWP_HIDEWINDOW)).log_if_err();
+            return;
+        }
+
+        if self.hide_when_inactive && self.window_state == WindowState::Active {
+            self.update_position(Some(SWP_SHOWWINDOW)).log_if_err();
+        }
+
         let (top_color, bottom_color) = match self.window_state {
             WindowState::Active => (
                 &mut self.border_drawer.active_color,

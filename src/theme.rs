@@ -184,3 +184,147 @@ impl Drop for ThemeWatcher {
         }
     }
 }
+
+const ACCENT_SUBKEY: &str = r"SOFTWARE\Microsoft\Windows\DWM";
+const ACCENT_VALUE_NAME: &str = "ColorizationColor";
+
+fn get_accent_color_registry() -> u32 {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(accent_key) = hkcu.open_subkey(ACCENT_SUBKEY) else {
+        return 0;
+    };
+    accent_key.get_value::<u32, _>(ACCENT_VALUE_NAME).unwrap_or(0)
+}
+
+/// Watches for Windows accent color changes by monitoring the registry.
+/// When the accent color changes, it sends WM_APP_RECREATE_DRAWER to all border windows.
+#[derive(Debug)]
+#[allow(unused)]
+pub struct AccentWatcher {
+    reg_key: OwnedHKEY,
+    changed_event: OwnedHANDLE,
+    stop_event: OwnedHANDLE,
+    thread_handle: Option<JoinHandle<()>>,
+}
+
+impl AccentWatcher {
+    pub fn new() -> anyhow::Result<Self> {
+        let subkey_wide: Vec<u16> = ACCENT_SUBKEY
+            .encode_utf16()
+            .chain(iter::once(0))
+            .collect();
+
+        let mut hkey = HKEY::default();
+        unsafe {
+            RegOpenKeyExW(
+                HKEY(HKEY_CURRENT_USER as _),
+                PCWSTR(subkey_wide.as_ptr()),
+                Some(0),
+                KEY_NOTIFY,
+                &mut hkey,
+            )
+        }
+        .ok()
+        .context("could not open Accent registry key for accent watcher")?;
+
+        let reg_key = OwnedHKEY(hkey);
+        let reg_handle_isize = reg_key.0.0 as isize;
+
+        let changed_event = {
+            let handle = unsafe { CreateEventW(None, false, false, None)? };
+            OwnedHANDLE(handle)
+        };
+
+        let stop_event = {
+            let handle = unsafe { CreateEventW(None, true, false, None)? };
+            OwnedHANDLE(handle)
+        };
+
+        let changed_handle_isize = changed_event.0.0 as isize;
+        let stop_handle_isize = stop_event.0.0 as isize;
+
+        let thread_handle = thread::spawn(move || {
+            debug!("entering accent watcher thread");
+
+            let reg_hkey = HKEY(reg_handle_isize as _);
+            let events = [
+                HANDLE(changed_handle_isize as _),
+                HANDLE(stop_handle_isize as _),
+            ];
+
+            const WAIT_OBJECT_1: WAIT_EVENT = WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
+            const WAIT_ABANDONED_1: WAIT_EVENT = WAIT_EVENT(WAIT_ABANDONED_0.0 + 1);
+
+            let mut last_accent = get_accent_color_registry();
+
+            loop {
+                let reg_result = unsafe {
+                    RegNotifyChangeKeyValue(
+                        reg_hkey,
+                        false,
+                        REG_NOTIFY_CHANGE_LAST_SET,
+                        Some(events[0]),
+                        true,
+                    )
+                };
+
+                if reg_result.is_err() {
+                    error!("AccentWatcher: RegNotifyChangeKeyValue failed: {:?}", reg_result);
+                    break;
+                }
+
+                let wait_result = unsafe { WaitForMultipleObjects(&events, false, INFINITE) };
+
+                if wait_result == WAIT_OBJECT_1 {
+                    break;
+                }
+
+                if wait_result == WAIT_ABANDONED_0
+                    || wait_result == WAIT_ABANDONED_1
+                    || wait_result == WAIT_FAILED
+                {
+                    let last_error = get_last_error();
+                    error!("AccentWatcher: could not wait for accent changes: {last_error:?}");
+                    break;
+                }
+
+                let current_accent = get_accent_color_registry();
+                if current_accent != last_accent {
+                    last_accent = current_accent;
+                    info!("accent color changed; updating borders");
+                    reload_borders();
+                }
+            }
+
+            debug!("exiting accent watcher thread");
+        });
+
+        Ok(Self {
+            reg_key,
+            changed_event,
+            stop_event,
+            thread_handle: Some(thread_handle),
+        })
+    }
+}
+
+impl Drop for AccentWatcher {
+    fn drop(&mut self) {
+        let set_res = unsafe { SetEvent(self.stop_event.0) };
+
+        match set_res {
+            Ok(()) => match self.thread_handle.take() {
+                Some(handle) => {
+                    if let Err(err) = handle.join() {
+                        error!("could not join accent watcher thread handle: {err:?}");
+                    }
+                }
+                None => error!("could not take accent watcher thread handle"),
+            },
+            Err(err) => error!(
+                "could not signal stop event on {:?} for accent watcher: {err:#}",
+                self.stop_event
+            ),
+        }
+    }
+}

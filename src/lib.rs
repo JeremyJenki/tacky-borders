@@ -26,7 +26,7 @@ use sp_log::{ColorChoice, CombinedLogger, FileLogger, LevelFilter, TermLogger, T
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, OnceLock, RwLock, RwLockWriteGuard};
 use std::thread::{self, JoinHandle};
-use theme::ThemeWatcher;
+use theme::{AccentWatcher, ThemeWatcher};
 use utils::{
     LogIfErr, OwnedHANDLE, T_E_UNINIT, ToWindowsResult, WM_APP_RECREATE_DRAWER,
     WindowsCompatibleResult, WindowsContext, create_border_for_window, get_foreground_window,
@@ -61,8 +61,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EVENT_MAX, EVENT_MIN, EnumWindows, GetWindowThreadProcessId, IDC_ARROW, IDNO, LoadCursorW,
-    MB_DEFBUTTON2, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    EVENT_MAX, EVENT_MIN, EnumWindows, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW,
+    MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
     MESSAGEBOX_RESULT, MESSAGEBOX_STYLE, MessageBoxW, RegisterClassExW, WINEVENT_OUTOFCONTEXT,
     WINEVENT_SKIPOWNPROCESS, WM_NCDESTROY, WNDCLASSEXW,
 };
@@ -96,6 +96,8 @@ pub struct AppState {
     directx_devices: RwLock<Option<DirectXDevices>>,
     komorebi_integration: Mutex<Option<KomorebiIntegration>>,
     theme_watcher: Mutex<Option<ThemeWatcher>>,
+    #[allow(dead_code)]
+    accent_watcher: Mutex<Option<AccentWatcher>>,
     display_adapters_watcher: Mutex<Option<DisplayAdaptersWatcher>>,
 }
 
@@ -109,6 +111,11 @@ impl AppState {
         let config_watcher: Mutex<Option<ConfigWatcher>> = Mutex::new(None);
         let komorebi_integration: Mutex<Option<KomorebiIntegration>> = Mutex::new(None);
         let theme_watcher: Mutex<Option<ThemeWatcher>> = Mutex::new(None);
+        let accent_watcher: Mutex<Option<AccentWatcher>> = Mutex::new(
+            AccentWatcher::new()
+                .inspect_err(|err| error!("could not start accent watcher: {err:#}"))
+                .ok(),
+        );
 
         let config = match Config::create() {
             Ok(config) => {
@@ -184,6 +191,7 @@ impl AppState {
             directx_devices: RwLock::new(directx_devices_opt),
             komorebi_integration,
             theme_watcher,
+            accent_watcher,
             display_adapters_watcher,
         }
     }
@@ -639,12 +647,7 @@ pub fn is_unwanted_instance() -> bool {
         // Note that in the case of ERROR_ALREADY_EXISTS, CreateMutexW still returns Ok with a handle
         // to the existing Mutex, so we need to check the error separately with GetLastError.
         if mutex_res.is_err() || get_last_error() == ERROR_ALREADY_EXISTS {
-            let yes_no_decision = display_question_box(
-                "an instance of tacky-borders is already running; continue anyways?",
-                Some(MB_DEFBUTTON2),
-            );
-
-            return yes_no_decision == IDNO;
+            return true;
         }
 
         false
